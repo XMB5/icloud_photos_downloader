@@ -61,12 +61,6 @@ CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
     default="original",
 )
 @click.option(
-    "--live-photo-size",
-    help="Live Photo video size to download (default: original)",
-    type=click.Choice(["original", "medium", "thumb"]),
-    default="original",
-)
-@click.option(
     "--recent",
     help="Number of recent photos to download (default: download all photos)",
     type=click.IntRange(0),
@@ -122,11 +116,6 @@ CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
     help="Folder structure (default: {:%Y/%m/%d})",
     metavar="<folder_structure>",
     default="{:%Y/%m/%d}",
-)
-@click.option(
-    "--set-exif-datetime",
-    help="Write the DateTimeOriginal exif tag from file creation date, if it doesn't exist.",
-    is_flag=True,
 )
 @click.option(
     "--smtp-username",
@@ -192,7 +181,6 @@ def main(
         password,
         cookie_directory,
         size,
-        live_photo_size,
         recent,
         until_found,
         album,
@@ -203,7 +191,6 @@ def main(
         auto_delete,
         only_print_filenames,
         folder_structure,
-        set_exif_datetime,
         smtp_username,
         smtp_password,
         smtp_host,
@@ -347,6 +334,8 @@ def main(
         photos_enumerator = tqdm(photos, **tqdm_kwargs)
         logger.set_tqdm(photos_enumerator)
 
+    photos_db=[]
+
     # pylint: disable-msg=too-many-nested-blocks
     for photo in photos_enumerator:
         for _ in range(constants.MAX_RETRIES):
@@ -361,26 +350,15 @@ def main(
                     "(Item type was: %s)" % (photo.filename, photo.item_type)
                 )
                 break
-            try:
-                created_date = photo.created.astimezone(get_localzone())
-            except (ValueError, OSError):
-                logger.set_tqdm_description(
-                    "Could not convert photo created date to local timezone (%s)" %
-                    photo.created, logging.ERROR)
-                created_date = photo.created
+            asset_date_seconds = photo._asset_record['fields']['assetDate']['value']/1000
+            tz_offset_field = photo._asset_record['fields'].get('timeZoneOffset')
+            tz_offset = tz_offset_field['value'] if tz_offset_field else 0
+            created_date = datetime.datetime.fromtimestamp(asset_date_seconds, datetime.timezone.utc) + \
+                           datetime.timedelta(seconds=tz_offset)
+            # created_date has correct fields (year, month, day, hour...)
+            # but tzinfo will always be UTC, not the correct timezone
 
-            try:
-                date_path = folder_structure.format(created_date)
-            except ValueError:  # pragma: no cover
-                # This error only seems to happen in Python 2
-                logger.set_tqdm_description(
-                    "Photo created date was not valid (%s)" %
-                    photo.created, logging.ERROR)
-                # e.g. ValueError: year=5 is before 1900
-                # (https://github.com/ndbroadbent/icloud_photos_downloader/issues/122)
-                # Just use the Unix epoch
-                created_date = datetime.datetime.fromtimestamp(0)
-                date_path = folder_structure.format(created_date)
+            date_path = folder_structure.format(created_date)
 
             download_dir = os.path.join(directory, date_path)
 
@@ -424,25 +402,29 @@ def main(
                     break
                 download_size = "original"
 
-            download_path = local_download_path(
+            filename, download_path = local_download_path(
                 photo, download_size, download_dir)
+            lp_download_path = download_path + ".live.mov"
+
+            db_entry = {
+                'relativePath': os.path.join(date_path, filename),
+                'isFavorite': bool('isFavorite' in photo._asset_record['fields'] and
+                              photo._asset_record['fields']['isFavorite']['value']),
+                'createdDate': '{date:%B} {date.day}, {date.year}, {hour}:{date:%M}:{date:%S} {date:%p}'
+                                .format(date=created_date, hour=int('{date:%I}'.format(date=created_date))),
+                'hasLivePhoto': False  # will changed later
+            }
 
             file_exists = os.path.isfile(download_path)
-            if not file_exists and download_size == "original":
-                # Deprecation - We used to download files like IMG_1234-original.jpg,
-                # so we need to check for these.
-                # Now we match the behavior of iCloud for Windows: IMG_1234.jpg
-                original_download_path = ("-%s." % size).join(
-                    download_path.rsplit(".", 1)
-                )
-                file_exists = os.path.isfile(original_download_path)
-
             if file_exists:
                 if until_found is not None:
                     consecutive_files_found += 1
                 logger.set_tqdm_description(
                     "%s already exists." % truncate_middle(download_path, 96)
                 )
+                if os.path.isfile(lp_download_path):
+                    db_entry['hasLivePhoto'] = True
+
             else:
                 if until_found is not None:
                     consecutive_files_found = 0
@@ -455,41 +437,23 @@ def main(
                         "Downloading %s" %
                         truncated_path)
 
-                    download_result = download.download_media(
+                    download.download_media(
                         icloud, photo, download_path, download_size
                     )
 
-                    if download_result and set_exif_datetime:
-                        if photo.filename.lower().endswith((".jpg", ".jpeg")):
-                            if not exif_datetime.get_photo_exif(download_path):
-                                # %Y:%m:%d looks wrong but it's the correct format
-                                date_str = created_date.strftime(
-                                    "%Y:%m:%d %H:%M:%S")
-                                logger.debug(
-                                    "Setting EXIF timestamp for %s: %s",
-                                    download_path,
-                                    date_str,
-                                )
-                                exif_datetime.set_photo_exif(
-                                    download_path,
-                                    created_date.strftime("%Y:%m:%d %H:%M:%S"),
-                                )
-                        else:
-                            timestamp = time.mktime(created_date.timetuple())
-                            os.utime(download_path, (timestamp, timestamp))
+                    created_date_unix = created_date.timestamp()
+                    os.utime(download_path, (created_date_unix, created_date_unix))
+
+            #if download_path.lower().endswith((".jpg", ".jpeg", ".heic")):
+            #    photo_taken_time = exif_datetime.get_photo_exif(download_path)
+            #    if photo_taken_time:
+            #        db_entry['exifDate'] = exif_datetime.exif_to_unix_local(photo_taken_time)
 
             # Also download the live photo if present
             if not skip_live_photos:
-                lp_size = live_photo_size + "Video"
+                lp_size = "originalVideo"
                 if lp_size in photo.versions:
-                    version = photo.versions[lp_size]
-                    filename = version["filename"]
-                    if live_photo_size != "original":
-                        # Add size to filename if not original
-                        filename = filename.replace(
-                            ".MOV", "-%s.MOV" %
-                            live_photo_size)
-                    lp_download_path = os.path.join(download_dir, filename)
+                    db_entry['hasLivePhoto'] = True
 
                     if only_print_filenames:
                         print(lp_download_path)
@@ -499,14 +463,15 @@ def main(
                                 "%s already exists."
                                 % truncate_middle(lp_download_path, 96)
                             )
-                            break
+                        else:
+                            truncated_path = truncate_middle(lp_download_path, 96)
+                            logger.set_tqdm_description(
+                                "Downloading %s" % truncated_path)
+                            download.download_media(
+                                icloud, photo, lp_download_path, lp_size
+                            )
 
-                        truncated_path = truncate_middle(lp_download_path, 96)
-                        logger.set_tqdm_description(
-                            "Downloading %s" % truncated_path)
-                        download.download_media(
-                            icloud, photo, lp_download_path, lp_size
-                        )
+            photos_db.append(db_entry)
 
             break
 
@@ -522,7 +487,15 @@ def main(
     if only_print_filenames:
         exit(0)
 
-    logger.info("All photos have been downloaded!")
+    logger.info('Writing db.json')
+
+    db_json_path = os.path.join(directory, 'db.json')
+    # avoid writing to file while other program reads it by writing to tmp file then renaming it
+    with open(db_json_path + '.tmp', 'w') as db_file:
+        json.dump(photos_db, db_file)
+    os.rename(db_json_path + '.tmp', db_json_path)
+
+    logger.info("Done downloading photos")
 
     if auto_delete:
         autodelete_photos(icloud, folder_structure, directory)

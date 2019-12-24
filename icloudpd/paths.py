@@ -3,10 +3,10 @@ import os
 
 
 def local_download_path(media, size, download_dir):
-    """Returns the full download path, including size"""
+    """Returns the filename and full download path, including size"""
     filename = filename_with_size(media, size)
     download_path = os.path.join(download_dir, filename)
-    return download_path
+    return filename, download_path
 
 
 def filename_with_size(media, size):

@@ -1,31 +1,26 @@
 """Get/set EXIF dates from photos"""
 
-import piexif
-from piexif._exceptions import InvalidImageDataError
+import exifread
 from icloudpd.logger import setup_logger
+import datetime
 
 
 def get_photo_exif(path):
-    """Get EXIF date for a photo, return nothing if there is an error"""
+    """Get EXIF date for a photo, returning None on error"""
     try:
-        exif_dict = piexif.load(path)
-        return exif_dict.get("Exif").get(36867)
-    except (ValueError, InvalidImageDataError):
+        with open(path, 'rb') as file:
+            exif_dict = exifread.process_file(file, details=False, stop_tag='DateTimeOriginal')
+            exif_date_tag = exif_dict.get('EXIF DateTimeOriginal')
+            if exif_date_tag:
+                return str(exif_date_tag)
+            else:
+                return None
+    except Exception as e:
         logger = setup_logger()
-        logger.debug("Error fetching EXIF data for %s", path)
+        logger.debug("%s fetching EXIF data for %s", e.__class__.__name__, path)
         return None
 
 
-def set_photo_exif(path, date):
-    """Set EXIF date on a photo, do nothing if there is an error"""
-    try:
-        exif_dict = piexif.load(path)
-        exif_dict.get("1st")[306] = date
-        exif_dict.get("Exif")[36867] = date
-        exif_dict.get("Exif")[36868] = date
-        exif_bytes = piexif.dump(exif_dict)
-        piexif.insert(exif_bytes, path)
-    except (ValueError, InvalidImageDataError):
-        logger = setup_logger()
-        logger.debug("Error setting EXIF data for %s", path)
-        return
+def exif_to_unix_local(exif_date):
+    # strptime returns in local timezone
+    return datetime.datetime.strptime(exif_date, "%Y:%m:%d %H:%M:%S").timestamp()
