@@ -12,7 +12,6 @@ import json
 import click
 
 from tqdm import tqdm
-from tzlocal import get_localzone
 
 from icloudpd.logger import setup_logger
 from icloudpd.authentication import authenticate, TwoStepAuthRequiredError
@@ -21,7 +20,6 @@ from icloudpd.email_notifications import send_2sa_notification
 from icloudpd.string_helpers import truncate_middle
 from icloudpd.autodelete import autodelete_photos
 from icloudpd.paths import local_download_path
-from icloudpd import exif_datetime
 # Must import the constants object so that we can mock values in tests.
 from icloudpd import constants
 
@@ -30,6 +28,10 @@ CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
 
 @click.command(context_settings=CONTEXT_SETTINGS, options_metavar="<options>")
 # @click.argument(
+@click.option(
+    "--dont-print-already-exists",
+    is_flag=True
+)
 @click.option(
     "-d", "--directory",
     help="Local directory that should be used for download",
@@ -176,6 +178,7 @@ CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
 # pylint: disable-msg=too-many-arguments,too-many-statements
 # pylint: disable-msg=too-many-branches,too-many-locals
 def main(
+        dont_print_already_exists,
         directory,
         username,
         password,
@@ -419,9 +422,10 @@ def main(
             if file_exists:
                 if until_found is not None:
                     consecutive_files_found += 1
-                logger.set_tqdm_description(
-                    "%s already exists." % truncate_middle(download_path, 96)
-                )
+                if not dont_print_already_exists:
+                    logger.set_tqdm_description(
+                        "%s already exists." % truncate_middle(download_path, 96)
+                    )
                 if os.path.isfile(lp_download_path):
                     db_entry['hasLivePhoto'] = True
 
@@ -459,10 +463,11 @@ def main(
                         print(lp_download_path)
                     else:
                         if os.path.isfile(lp_download_path):
-                            logger.set_tqdm_description(
-                                "%s already exists."
-                                % truncate_middle(lp_download_path, 96)
-                            )
+                            if not dont_print_already_exists:
+                                logger.set_tqdm_description(
+                                    "%s already exists."
+                                    % truncate_middle(lp_download_path, 96)
+                                )
                         else:
                             truncated_path = truncate_middle(lp_download_path, 96)
                             logger.set_tqdm_description(
