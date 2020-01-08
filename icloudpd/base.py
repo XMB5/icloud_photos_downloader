@@ -413,6 +413,7 @@ def main(
                 'relativePath': os.path.join(date_path, filename),
                 'isFavorite': bool('isFavorite' in photo._asset_record['fields'] and
                               photo._asset_record['fields']['isFavorite']['value']),
+                'orientation': photo._asset_record['fields']['orientation']['value'] if 'orientation' in photo._asset_record['fields'] else 1,
                 'createdDate': '{date:%B} {date.day}, {date.year}, {hour}:{date:%M}:{date:%S} {date:%p}'
                                 .format(date=created_date, hour=int('{date:%I}'.format(date=created_date))),
                 'hasLivePhoto': False  # will changed later
