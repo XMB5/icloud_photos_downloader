@@ -354,6 +354,8 @@ def main(
                 )
                 break
             asset_date_seconds = photo._asset_record['fields']['assetDate']['value']/1000
+            if asset_date_seconds < 0:
+                asset_date_seconds = 0
             tz_offset_field = photo._asset_record['fields'].get('timeZoneOffset')
             tz_offset = tz_offset_field['value'] if tz_offset_field else 0
             created_date = datetime.datetime.fromtimestamp(asset_date_seconds, datetime.timezone.utc) + \
